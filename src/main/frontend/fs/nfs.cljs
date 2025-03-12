@@ -23,19 +23,83 @@
 ;; Cache the file handles in the memory so that
 ;; the browser will not keep asking permissions.
 (defonce nfs-file-handles-cache (atom {}))
+;; 记录文件句柄添加的顺序，用于LRU缓存策略
+(defonce nfs-file-handles-order (atom []))
+;; 设置缓存大小限制
+(def ^:private max-file-handles 5000)
 
 (defn- get-nfs-file-handle
   [handle-path]
-  (get @nfs-file-handles-cache handle-path))
+  (when-let [handle (get @nfs-file-handles-cache handle-path)]
+    ;; 实现LRU策略，将访问的句柄移到最近使用的位置
+    (when handle-path
+      (swap! nfs-file-handles-order (fn [order]
+                                      (-> order
+                                          (vec)
+                                          (as-> o
+                                                (remove #(= % handle-path) o))
+                                          (vec)
+                                          (conj handle-path)))))
+    handle))
+
+(defn- limit-cache-size!
+  "限制文件句柄缓存的大小，如果超过阈值，则移除最早添加的句柄"
+  []
+  (let [current-size (count @nfs-file-handles-cache)]
+    (when (> current-size max-file-handles)
+      (let [handles-to-remove (take (- current-size (int (* max-file-handles 0.8))) @nfs-file-handles-order)
+            new-order (vec (drop (count handles-to-remove) @nfs-file-handles-order))]
+        (doseq [handle-path handles-to-remove]
+          (swap! nfs-file-handles-cache dissoc handle-path))
+        (reset! nfs-file-handles-order new-order)
+        (log/info :nfs/cache-limited {:removed (count handles-to-remove)
+                                      :new-size (count @nfs-file-handles-cache)})))))
+
+;; 添加定期清理缓存的函数
+(defn setup-periodic-cache-cleanup!
+  "设置定期清理缓存的任务，每小时检查一次"
+  []
+  (let [interval-ms (* 60 60 1000)] ;; 1小时
+    (js/setInterval
+     (fn []
+       (let [current-size (count @nfs-file-handles-cache)]
+         (when (> current-size (/ max-file-handles 2))
+           (log/info :nfs/periodic-cleanup {:before current-size})
+           (limit-cache-size!)
+           (log/info :nfs/periodic-cleanup {:after (count @nfs-file-handles-cache)}))))
+     interval-ms)))
+
+;; 启动文件句柄缓存管理器
+(defn start-file-handle-cache-manager!
+  "启动文件句柄缓存管理器"
+  []
+  (setup-periodic-cache-cleanup!))
+
+(defn clear-file-handles-cache!
+  "清空文件句柄缓存"
+  []
+  (reset! nfs-file-handles-cache {})
+  (reset! nfs-file-handles-order [])
+  (log/info :nfs/cache-cleared {}))
 
 (defn add-nfs-file-handle!
   [handle-path handle]
   (prn ::DEBUG "add-nfs-file-handle!" handle-path)
-  (swap! nfs-file-handles-cache assoc handle-path handle))
+  (swap! nfs-file-handles-cache assoc handle-path handle)
+  ;; 更新句柄顺序，将新添加的句柄放在最后
+  (swap! nfs-file-handles-order (fn [order]
+                                  (-> order
+                                      (vec)
+                                      (conj handle-path))))
+  ;; 检查并限制缓存大小
+  (limit-cache-size!))
 
 (defn remove-nfs-file-handle!
   [handle-path]
-  (swap! nfs-file-handles-cache dissoc handle-path))
+  (swap! nfs-file-handles-cache dissoc handle-path)
+  ;; 从顺序列表中移除
+  (swap! nfs-file-handles-order (fn [order]
+                                  (vec (remove #(= % handle-path) order)))))
 
 (defn- nfs-saved-handler
   [repo path file]
@@ -66,6 +130,11 @@
 (defn check-directory-permission!
   [repo]
   (when (config/local-db? repo)
+    ;; 启动文件句柄缓存管理器（只启动一次）
+    (when-not (state/sub :nfs/cache-manager-started?)
+      (start-file-handle-cache-manager!)
+      (state/set-state! :nfs/cache-manager-started? true))
+    
     (p/let [repo-dir (config/get-repo-dir repo)
             handle-path (str "handle/" repo-dir)
             handle (idb/get-item handle-path)]

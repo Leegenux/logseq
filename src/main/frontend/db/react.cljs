@@ -11,7 +11,8 @@
             [frontend.state :as state]
             [frontend.util :as util :refer [react]]
             [cljs.spec.alpha :as s]
-            [clojure.core.async :as async]))
+            [clojure.core.async :as async]
+            [lambdaisland.glogi :as log]))
 
 ;;; keywords specs for reactive query, used by `react/q` calls
 ;; ::block
@@ -47,9 +48,10 @@
 (s/def ::affected-keys (s/coll-of ::react-query-keys))
 
 ;; Query atom of map of Key ([repo q inputs]) -> atom
-;; TODO: replace with LRUCache, only keep the latest 20 or 50 items?
-
+;; 实现LRU缓存，限制缓存大小
+(def ^:private max-query-cache-size 100)
 (defonce query-state (atom {}))
+(defonce query-access-order (atom []))
 
 ;; Current dynamic component
 (def ^:dynamic *query-component* nil)
@@ -59,6 +61,63 @@
 
 ;; component -> query-key
 (defonce query-components (atom {}))
+
+;; 定期清理缓存的函数
+(defn- limit-query-cache-size!
+  "限制查询缓存的大小，如果超过阈值，则移除最早访问的查询"
+  []
+  (let [current-size (count @query-state)]
+    (when (> current-size max-query-cache-size)
+      (let [queries-to-remove (take (- current-size (int (* max-query-cache-size 0.8))) @query-access-order)
+            new-order (vec (drop (count queries-to-remove) @query-access-order))]
+        (doseq [query-key queries-to-remove]
+          (swap! query-state dissoc query-key))
+        (reset! query-access-order new-order)
+        (log/info :react/cache-limited {:removed (count queries-to-remove)
+                                        :new-size (count @query-state)})))))
+
+;; 更新查询访问顺序，实现LRU策略
+(defn- update-query-access-order!
+  "更新查询访问顺序，将最近访问的查询移到最后"
+  [k]
+  (when k
+    (swap! query-access-order (fn [order]
+                                (-> order
+                                    (vec)
+                                    (as-> o
+                                          (remove #(= % k) o))
+                                    (vec)
+                                    (conj k))))))
+
+;; 设置定期清理缓存的任务
+(defn setup-periodic-cache-cleanup!
+  "设置定期清理缓存的任务，每小时检查一次"
+  []
+  (let [interval-ms (* 60 60 1000)] ;; 1小时
+    (js/setInterval
+     (fn []
+       (let [current-size (count @query-state)]
+         (when (> current-size (/ max-query-cache-size 2))
+           (log/info :react/periodic-cleanup {:before current-size})
+           (limit-query-cache-size!)
+           (log/info :react/periodic-cleanup {:after (count @query-state)}))))
+     interval-ms)))
+
+;; 启动查询缓存管理器
+(defn ^:export start-query-cache-manager!
+  "启动查询缓存管理器"
+  []
+  (when-not (state/sub :react/cache-manager-started?)
+    (setup-periodic-cache-cleanup!)
+    (state/set-state! :react/cache-manager-started? true)))
+
+;; 清空查询缓存
+(defn ^:export clear-query-cache!
+  "清空查询缓存"
+  []
+  (reset! query-state {})
+  (reset! query-access-order [])
+  (log/info :react/cache-cleared {}))
 
 (defn- get-blocks-range
   [result-atom new-result]
@@ -71,44 +130,51 @@
        :new [(:db/id (first new-result))
              (:db/id (last new-result))]})))
 
-(defn set-new-result!
+(defn ^:export set-new-result!
   [k new-result tx-report]
   (when-let [result-atom (get-in @query-state [k :result])]
     (when tx-report
       (when-let [range (get-blocks-range result-atom new-result)]
         (state/set-state! [:ui/pagination-blocks-range (get-in tx-report [:db-after :max-tx])] range)))
-    (reset! result-atom new-result)))
+    (reset! result-atom new-result)
+    ;; 更新访问顺序
+    (update-query-access-order! k)))
 
-(defn swap-new-result!
+(defn ^:export swap-new-result!
   [k f]
   (when-let [result-atom (get-in @query-state [k :result])]
     (let [new-result' (f @result-atom)]
-      (reset! result-atom new-result'))))
+      (reset! result-atom new-result')
+      ;; 更新访问顺序
+      (update-query-access-order! k))))
 
-(defn kv
+(defn ^:export kv
   [key value]
   {:db/id -1
    :db/ident key
    key value})
 
-(defn remove-key!
+(defn ^:export remove-key!
   [repo-url key]
   (db-utils/transact! repo-url [[:db.fn/retractEntity [:db/ident key]]])
   (set-new-result! [repo-url :kv key] nil nil))
 
-(defn clear-query-state!
+(defn ^:export clear-query-state!
   []
-  (reset! query-state {}))
+  (reset! query-state {})
+  (reset! query-access-order []))
 
-(defn clear-query-state-without-refs-and-embeds!
+(defn ^:export clear-query-state-without-refs-and-embeds!
   []
   (let [state @query-state
         state (->> (filter (fn [[[_repo k] _v]]
                              (contains? #{:blocks :block/block :custom} k)) state)
                    (into {}))]
-    (reset! query-state state)))
+    (reset! query-state state)
+    ;; 重建访问顺序
+    (reset! query-access-order (vec (keys state)))))
 
-(defn add-q!
+(defn ^:export add-q!
   [k query time inputs result-atom transform-fn query-fn inputs-fn]
   (let [time' (int (util/safe-parse-float time))] ;; for robustness. `time` should already be float
     (swap! query-state assoc k {:query query
@@ -117,19 +183,26 @@
                                 :result result-atom
                                 :transform-fn transform-fn
                                 :query-fn query-fn
-                                :inputs-fn inputs-fn}))
-  result-atom)
+                                :inputs-fn inputs-fn})
+    ;; 更新访问顺序
+    (update-query-access-order! k)
+    ;; 检查并限制缓存大小
+    (limit-query-cache-size!)
+    result-atom))
 
-(defn remove-q!
+(defn ^:export remove-q!
   [k]
-  (swap! query-state dissoc k))
+  (swap! query-state dissoc k)
+  ;; 从访问顺序中移除
+  (swap! query-access-order (fn [order]
+                              (vec (remove #(= % k) order)))))
 
-(defn add-query-component!
+(defn ^:export add-query-component!
   [key component]
   (when (and key component)
     (swap! query-components update component (fn [col] (set (conj col key))))))
 
-(defn remove-query-component!
+(defn ^:export remove-query-component!
   [component]
   (when-let [queries (get @query-components component)]
     (let [all-queries (apply concat (vals @query-components))]
@@ -140,7 +213,7 @@
   (swap! query-components dissoc component))
 
 ;; TODO: rename :custom to :query/custom
-(defn remove-custom-query!
+(defn ^:export remove-custom-query!
   [repo query]
   (remove-q! [repo :custom query]))
 
@@ -149,12 +222,14 @@
 (defn get-query-cached-result
   [k]
   (when-let [result (get @query-state k)]
+    ;; 更新访问顺序
+    (update-query-access-order! k)
     (when (satisfies? IWithMeta @(:result result))
       (set! (.-state (:result result))
            (with-meta @(:result result) {:query-time (:query-time result)})))
     (:result result)))
 
-(defn q
+(defn ^:export q
   [repo k {:keys [use-cache? transform-fn query-fn inputs-fn disable-reactive?]
            :or {use-cache? true
                 transform-fn identity}} query & inputs]
@@ -199,7 +274,7 @@
 ;; TODO: Extract several parts to handlers
 
 
-(defn get-current-page
+(defn ^:export get-current-page
   []
   (let [match (:route-match @state/state)
         route-name (get-in match [:data :name])
@@ -330,7 +405,7 @@
           (contains? #{:collapse-expand-blocks :delete-blocks} outliner-op)
           (:undo? tx-meta) (:redo? tx-meta)))))
 
-(defn refresh!
+(defn ^:export refresh!
   "Re-compute corresponding queries (from tx) and refresh the related react components."
   [repo-url {:keys [tx-data tx-meta] :as tx}]
   (when (and repo-url
@@ -344,8 +419,8 @@
             (when (and
                    (= (first k) repo-url)
                    (or (get affected-keys (vec (rest k)))
-                       custom?
-                       kv?))
+                   custom?
+                   kv?))
               (let [{:keys [query query-fn]} cache
                     {:keys [custom-query?]} (state/edit-in-query-or-refs-component)]
                 (util/profile
@@ -360,13 +435,13 @@
                      (catch :default e
                        (js/console.error e)))))))))))))
 
-(defn set-key-value
+(defn ^:export set-key-value
   [repo-url key value]
   (if value
     (db-utils/transact! repo-url [(kv key value)])
     (remove-key! repo-url key)))
 
-(defn sub-key-value
+(defn ^:export sub-key-value
   ([key]
    (sub-key-value (state/get-current-repo) key))
   ([repo-url key]

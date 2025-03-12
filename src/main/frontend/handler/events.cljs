@@ -680,6 +680,12 @@
   (notification/show! "Clearing..." :warning false)
   (p/let [_ (when (util/electron?)
               (ipc/ipc "clearCache"))
+          ;; 清理文件句柄缓存
+          _ (when-let [clear-fn (resolve 'frontend.fs.nfs/clear-file-handles-cache!)]
+              (clear-fn))
+          ;; 清理反应式查询缓存
+          _ (when-let [clear-fn (resolve 'frontend.db.react/clear-query-cache!)]
+              (clear-fn))
           _ (idb/clear-local-storage-and-idb!)]
     (js/setTimeout
       (fn [] (if (util/electron?)

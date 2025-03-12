@@ -790,6 +790,15 @@
      (when (util/electron?) (https-user-agent-row https-agent-opts))
      (when (util/electron?) (auto-chmod-row t))
      (when (and (util/electron?) (not (config/demo-graph? current-repo))) (filename-format-row))
+     
+     ;; 添加数据库监控设置项
+     (row-with-button-action
+      {:left-label "数据库监控"
+       :button-label "查看"
+       :on-click #(when-let [show-fn (resolve 'frontend.db.monitor/show-db-stats)]
+                    (show-fn))
+       :-for "database-monitor"})
+     
      (clear-cache-row t)
 
      (ui/admonition
@@ -1082,7 +1091,7 @@
        [:<>
         [:div.it.sm:grid.sm:grid-cols-3.sm:gap-4.sm:items-center
          [:label.flex.font-medium.leading-5.self-start.mt-1
-          (ui/icon  (if logged-in? "lock-open" "lock") {:class "mr-1"}) (t :settings-page/beta-features)]]
+          (ui/icon (if logged-in? "lock-open" "lock") {:class "mr-1"}) (t :settings-page/beta-features)]]
         [:div.flex.flex-col.gap-4
          {:class (when-not user-handler/alpha-or-beta-user? "opacity-50 pointer-events-none cursor-not-allowed")}
          (sync-switcher-row enable-sync?)
@@ -1093,17 +1102,19 @@
           [:a.mx-1 {:href "https://blog.logseq.com/how-to-setup-and-use-logseq-sync/"
                     :target "_blank"}
            (t :settings-page/sync-desc-2)]
-          (t :settings-page/sync-desc-3)]]])]))
-
-     ;; (when-not web-platform?
-     ;;   [:<>
-     ;;    [:hr]
-;;    [:div.it.sm:grid.sm:grid-cols-3.sm:gap-4.sm:items-center
-     ;;     [:label.flex.font-medium.leading-5.self-start.mt-1 (ui/icon  (if logged-in? "lock-open" "lock") {:class "mr-1"}) (t :settings-page/alpha-features)]]
-     ;;    [:div.flex.flex-col.gap-4
-     ;;     {:class (when-not user-handler/alpha-user? "opacity-50 pointer-events-none cursor-not-allowed")}
-     ;;     ;; features
-     ;;     ]])
+          (t :settings-page/sync-desc-3)]]])
+     
+     ;; 将alpha-features部分也移到settings-features函数内部
+     (when-not web-platform?
+       [:<>
+        [:div.it.sm:grid.sm:grid-cols-3.sm:gap-4.sm:items-center
+         [:label.flex.font-medium.leading-5.self-start.mt-1 
+          (ui/icon (if logged-in? "lock-open" "lock") {:class "mr-1"}) 
+          (t :settings-page/alpha-features)]]
+        [:div.flex.flex-col.gap-4
+         {:class (when-not user-handler/alpha-user? "opacity-50 pointer-events-none cursor-not-allowed")}
+         ;; features
+         ]])]))
 
 
 (def DEFAULT-ACTIVE-TAB-STATE (if config/ENABLE-SETTINGS-ACCOUNT-TAB [:account :account] [:general :general]))

@@ -42,7 +42,8 @@
             [goog.object :as gobj]
             [lambdaisland.glogi :as log]
             [promesa.core :as p]
-            [frontend.mobile.core :as mobile]))
+            [frontend.mobile.core :as mobile]
+            [frontend.db.monitor :as db-monitor]))
 
 (defn- set-global-error-notification!
   []
@@ -217,6 +218,19 @@
      (notification/show! "Sorry, it seems that your browser doesn't support IndexedDB, we recommend to use latest Chrome(Chromium) or Firefox(Non-private mode)." :error false)
      (state/set-indexedb-support! false)))
   (idb/start)
+  
+  ;; 注册数据库监控设置项
+  (try
+    (db-monitor/register-settings-item!)
+    (catch :default e
+      (js/console.error "Failed to register database monitor settings:" e)))
+
+  ;; 启动反应式查询缓存管理器
+  (try
+    (when-let [start-fn (resolve 'frontend.db.react/start-query-cache-manager!)]
+      (start-fn))
+    (catch :default e
+      (js/console.error "Failed to start query cache manager:" e)))
 
   (react/run-custom-queries-when-idle!)
 

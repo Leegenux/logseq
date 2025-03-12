@@ -184,7 +184,7 @@ class LSPluginCaller extends EventEmitter {
               }
             }
           }
-        }, 1000 * 60 * 30)
+        }, 1000 * 60 * 3)
       })
       .finally(() => {
         this._status = undefined

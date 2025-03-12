@@ -74,7 +74,7 @@ function getDefaultStore() {
 }
 function get(key, store = getDefaultStore()) {
     let req;
-    return store._withIDBStore('readwrite', store => {
+    return store._withIDBStore('readonly', store => {
         req = store.get(key);
     }).then(() => req.result);
 }
@@ -116,19 +116,47 @@ function clear(store = getDefaultStore()) {
 }
 function keys(store = getDefaultStore()) {
     const keys = [];
-    return store._withIDBStore('readwrite', store => {
-        // This would be store.getAllKeys(), but it isn't supported by Edge or Safari.
-        // And openKeyCursor isn't supported by Safari.
-        (store.openKeyCursor || store.openCursor).call(store).onsuccess = function () {
-            if (!this.result)
-                return;
-            keys.push(this.result.key);
-            this.result.continue();
-        };
+    return store._withIDBStore('readonly', store => {
+        if (store.getAllKeys) {
+            req = store.getAllKeys();
+            req.onsuccess = function() {
+                keys.push.apply(keys, req.result);
+            };
+        } else {
+            (store.openKeyCursor || store.openCursor).call(store).onsuccess = function () {
+                if (!this.result) return;
+                keys.push(this.result.key);
+                this.result.continue();
+            };
+        }
     }).then(() => keys);
 }
 function close(store = getDefaultStore()) {
     return store._close();
+}
+function delBatch(keys, store = getDefaultStore()) {
+    return store._withIDBStore('readwrite', store => {
+        for (const key of keys) {
+            store.delete(key);
+        }
+    });
+}
+async function estimateSize(store = getDefaultStore()) {
+    const allKeys = await keys(store);
+    let totalSize = 0;
+    
+    const batchSize = 100;
+    for (let i = 0; i < allKeys.length; i += batchSize) {
+        const batch = allKeys.slice(i, i + batchSize);
+        await Promise.all(batch.map(async (key) => {
+            const value = await get(key, store);
+            if (value) {
+                totalSize += JSON.stringify(value).length;
+            }
+        }));
+    }
+    
+    return totalSize;
 }
 
 exports.Store = Store;
@@ -140,3 +168,5 @@ exports.del = del;
 exports.clear = clear;
 exports.keys = keys;
 exports.close = close;
+exports.delBatch = delBatch;
+exports.estimateSize = estimateSize;
