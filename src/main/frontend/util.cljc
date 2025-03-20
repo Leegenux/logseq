@@ -1562,3 +1562,19 @@ Arg *stop: atom, reset to true to stop the loop"
      (if (satisfies? IMeta o)
        (with-meta o meta)
        o)))
+
+#?(:cljs
+   (defn batch-process
+     "批量处理一组项目，分批执行以避免阻塞UI线程
+      - items: 要处理的项目列表
+      - process-fn: 处理单个项目的函数
+      - batch-size: 每批处理的项目数量"
+     [items process-fn batch-size]
+     (let [batches (partition-all batch-size items)]
+       (async/go-loop [remaining batches]
+         (when (seq remaining)
+           (let [batch (first remaining)]
+             (doseq [item batch]
+               (process-fn item))
+             (async/<! (async/timeout 1)) ;; 给UI线程一个呼吸的机会
+             (recur (rest remaining))))))))

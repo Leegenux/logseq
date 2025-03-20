@@ -67,8 +67,8 @@
   "限制查询缓存的大小，如果超过阈值，则移除最早访问的查询"
   []
   (let [current-size (count @query-state)]
-    (when (> current-size max-query-cache-size)
-      (let [queries-to-remove (take (- current-size (int (* max-query-cache-size 0.8))) @query-access-order)
+    (when (> current-size (* 0.8 max-query-cache-size)) ;; 降低触发阈值，更积极地清理
+      (let [queries-to-remove (take (- current-size (int (* max-query-cache-size 0.6))) @query-access-order)
             new-order (vec (drop (count queries-to-remove) @query-access-order))]
         (doseq [query-key queries-to-remove]
           (swap! query-state dissoc query-key))

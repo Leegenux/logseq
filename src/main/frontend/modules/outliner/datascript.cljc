@@ -98,18 +98,28 @@
                                  (let [refs (:block/_refs block)]
                                    (map (fn [ref]
                                           (let [id (:db/id ref)
-                                                block-content (property/remove-properties (:block/format block) (:block/content block))
-                                                new-content (-> (:block/content ref)
-                                                                (string/replace (re-pattern (util/format "(?i){{embed \\(\\(%s\\)\\)\\s?}}" (str (:block/uuid block))))
-                                                                                block-content)
-                                                                (string/replace (block-ref/->block-ref (str (:block/uuid block)))
-                                                                                block-content))]
-                                            {:tx [[:db/retract (:db/id ref) :block/refs (:db/id block)]
-                                                  [:db/retract (:db/id ref) :block/path-refs (:db/id block)]
-                                                  [:db/add id :block/content new-content]]
-                                             :revert-tx [[:db/add id :block/content (:block/content ref)]]})) refs)))
+                                                block-content (when-let [content (:block/content block)]
+                                                               (property/remove-properties (:block/format block) content))
+                                                ref-content (:block/content ref)]
+                                            (if (and block-content ref-content)
+                                              (let [new-content (-> ref-content
+                                                                    (string/replace (re-pattern (util/format "(?i){{embed \\(\\(%s\\)\\)\\s?}}" (str (:block/uuid block))))
+                                                                                    block-content)
+                                                                    (string/replace (block-ref/->block-ref (str (:block/uuid block)))
+                                                                                    block-content))]
+                                                {:tx [[:db/retract (:db/id ref) :block/refs (:db/id block)]
+                                                      (when (:db/id block) 
+                                                        [:db/retract (:db/id ref) :block/path-refs (:db/id block)])
+                                                      [:db/add id :block/content new-content]]
+                                                 :revert-tx [[:db/add id :block/content ref-content]]})
+                                              ;; 如果内容为空，只处理引用关系
+                                              {:tx [[:db/retract (:db/id ref) :block/refs (:db/id block)]
+                                                    (when (:db/id block)
+                                                      [:db/retract (:db/id ref) :block/path-refs (:db/id block)])]
+                                               :revert-tx []}))) refs)))
                                (apply concat))
-             retracted-tx' (mapcat :tx retracted-tx)
+             retracted-tx' (mapcat (fn [tx-map]
+                                    (filter some? (:tx tx-map))) retracted-tx)
              revert-tx (mapcat :revert-tx retracted-tx)]
          (when (seq retracted-tx')
            (state/set-state! [:editor/last-replace-ref-content-tx (state/get-current-repo)]

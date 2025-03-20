@@ -29,16 +29,16 @@
    (atom
     {:route-match                           nil
      :today                                 nil
-     :system/events                         (async/chan 1000)
-     :db/batch-txs                          (async/chan 1000)
+     :system/events                         (async/chan (async/sliding-buffer 1000))
+     :db/batch-txs                          (async/chan (async/sliding-buffer 1000))
      :file/writes                           (let [coercer (m/coercer [:catn
                                                                       [:repo :string]
                                                                       [:page-id :any]
                                                                       [:outliner-op :any]
                                                                       [:epoch :int]])]
-                                              (async/chan 10000 (map coercer)))
+                                              (async/chan (async/sliding-buffer 10000) (map coercer)))
      :file/unlinked-dirs                    #{}
-     :reactive/custom-queries               (async/chan 1000)
+     :reactive/custom-queries               (async/chan (async/sliding-buffer 1000))
      :notification/show?                    false
      :notification/content                  nil
      :repo/loading-files?                   {}
@@ -290,7 +290,7 @@
      :feature/enable-sync?                  (storage/get :logseq-sync-enabled)
      :feature/enable-sync-diff-merge?       ((fnil identity true) (storage/get :logseq-sync-diff-merge-enabled))
 
-     :file/rename-event-chan                (async/chan 100)
+     :file/rename-event-chan                (async/chan (async/sliding-buffer 100))
      :ui/find-in-page                       nil
      :graph/importing                       nil
      :graph/importing-state                 {}

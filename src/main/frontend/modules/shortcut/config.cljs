@@ -203,7 +203,7 @@
                                              :fn      editor-handler/editor-delete}
 
    :editor/new-block                        {:binding "enter"
-                                             :fn      editor-handler/keydown-new-block-handler}
+                                             :fn      editor-handler/keydown-new-block-handler-debounced}
 
    :editor/new-line                         {:binding "shift+enter"
                                              :fn      editor-handler/keydown-new-line-handler}

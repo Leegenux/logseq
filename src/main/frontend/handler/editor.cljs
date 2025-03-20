@@ -874,15 +874,20 @@
           block (first blocks)
           block-parent (get uuid->dom-block (:block/uuid block))
           sibling-block (when block-parent (util/get-prev-block-non-collapsed-non-embed block-parent))]
-      (outliner-tx/transact!
-       {:outliner-op :delete-blocks}
-       (outliner-core/delete-blocks! blocks {}))
-      (when sibling-block
-        (move-to-prev-block repo sibling-block
-                            (:block/format block)
-                            (dom/attr sibling-block "id")
-                            ""
-                            true)))))
+      (try
+        (outliner-tx/transact!
+         {:outliner-op :delete-blocks}
+         (outliner-core/delete-blocks! blocks {}))
+        (when sibling-block
+          (move-to-prev-block repo sibling-block
+                              (:block/format block)
+                              (dom/attr sibling-block "id")
+                              ""
+                              true))
+        true  ;; 返回成功标志
+        (catch js/Error e
+          (js/console.error "Error deleting blocks:" e)
+          false))))) ;; 返回失败标志
 
 (defn- set-block-property-aux!
   [block-or-id key value]
@@ -1077,16 +1082,17 @@
 
 (defn cut-selection-blocks
   [copy?]
-  (when copy? (copy-selection-blocks true))
-  (state/set-block-op-type! :cut)
   (when-let [blocks (seq (get-selected-blocks))]
+    ;; 先复制内容
+    (when copy? (copy-selection-blocks true))
     ;; remove embeds, references and queries
     (let [dom-blocks (remove (fn [block]
-                              (or (= "true" (dom/attr block "data-transclude"))
-                                  (= "true" (dom/attr block "data-query")))) blocks)
-          dom-blocks (if (seq dom-blocks) dom-blocks
-                         (remove (fn [block]
-                                   (= "true" (dom/attr block "data-transclude"))) blocks))]
+                               (or (= "true" (dom/attr block "data-transclude"))
+                                   (= "true" (dom/attr block "data-query")))) blocks)
+          dom-blocks (if (seq dom-blocks) 
+                       dom-blocks
+                       (remove (fn [block]
+                                 (= "true" (dom/attr block "data-transclude"))) blocks))]
       (when (seq dom-blocks)
         (let [repo (state/get-current-repo)
               block-uuids (distinct (map #(uuid (dom/attr % "blockid")) dom-blocks))
@@ -1096,7 +1102,15 @@
               sorted-blocks (mapcat (fn [block]
                                       (tree/get-sorted-block-and-children repo (:db/id block)))
                                     top-level-blocks)]
-          (delete-blocks! repo (map :block/uuid sorted-blocks) sorted-blocks dom-blocks))))))
+          ;; 尝试删除块
+          (try 
+            (when (delete-blocks! repo (map :block/uuid sorted-blocks) sorted-blocks dom-blocks)
+              ;; 删除成功后才设置 block-op-type
+              (state/set-block-op-type! :cut)
+              (notification/show! "Cut!" :success))
+            (catch :default e
+              (js/console.error "Failed to cut blocks:" e)
+              (notification/show! "Cut operation failed"))))))))
 
 (def url-regex
   "Didn't use link/plain-link as it is incorrectly detects words as urls."
@@ -1502,7 +1516,7 @@
 (defn delete-asset-of-block!
   [{:keys [repo href full-text block-id local? delete-local?] :as _opts}]
   (let [block (db-model/query-block-by-uuid block-id)
-        _ (or block (throw (str block-id " not exists")))
+        _ (or block (throw (js/Error. (str block-id " not exists"))))
         text (:block/content block)
         content (string/replace text full-text "")]
     (save-block! repo block content)
@@ -3262,7 +3276,6 @@
       (cond
         (state/editing?)
         (keydown-up-down-handler direction)
-
         (state/selection?)
         (select-up-down direction)
 
@@ -3900,3 +3913,8 @@
   (.setData (gobj/get event "dataTransfer")
             (if (db-model/page? block-or-page-name) "page-name" "block-uuid")
             (str block-or-page-name)))
+
+;; 添加防抖版本的Enter键处理函数
+(def keydown-new-block-handler-debounced
+  (util/debounce 50 keydown-new-block-handler))
+

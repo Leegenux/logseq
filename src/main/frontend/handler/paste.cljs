@@ -180,14 +180,19 @@
   [input text e html]
   (util/stop e)
   (->
-   (p/let [copied-blocks (get-copied-blocks)]
+   (p/let [copied-blocks (get-copied-blocks)
+           op-type (state/get-block-op-type)]
+     (js/console.log "Paste operation, block-op-type:" (str op-type))
      (if (seq copied-blocks)
        ;; Handle internal paste
        (let [revert-cut-txs (get-revert-cut-txs copied-blocks)
-             keep-uuid? (= (state/get-block-op-type) :cut)]
+             keep-uuid? (= op-type :cut)]
+         (js/console.log "Pasting blocks with keep-uuid?:" keep-uuid?)
          (editor-handler/paste-blocks copied-blocks {:revert-cut-txs revert-cut-txs
                                                      :keep-uuid? keep-uuid?}))
-       (paste-copied-text input text html)))
+       (do
+         (js/console.log "No copied blocks found, pasting as text")
+         (paste-copied-text input text html))))
    (p/catch (fn [error]
               (log/error :msg "Paste failed" :exception error)
               (state/pub-event! [:capture-error {:error error
